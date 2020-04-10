@@ -127,3 +127,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+notebooks/notes
+notebooks/dask-worker-space/*
+notebooks/logs/*
