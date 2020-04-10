@@ -1,4 +1,4 @@
-name: marbl-forcing
+name: forcing-Fe-sedflux
 channels:
 - conda-forge
 - defaults
