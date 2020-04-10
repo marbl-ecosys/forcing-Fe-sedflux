@@ -21,7 +21,7 @@ Implements an approach to computing `fesedflux` originally in an IDL routine by 
 
 1. Prepare `fesedfrac`: [sedfrac_compute.ipynb](notebooks/sedfrac_compute.ipynb);
 
-2. Take time mean of `POC_FLUX_IN`, `UVEL`, and `VVLEL` from previous model solution: [_poc_flux_bottom_velocity.ipynb](notebooks/_poc_flux_bottom_velocity.ipynb)
+2. Take time mean of `POC_FLUX_IN`, `UVEL`, and `VVLEL` from previous model solution: [_poc_flux_bottom_velocity_inputs.ipynb](notebooks/_poc_flux_bottom_velocity_inputs.ipynb)
 
 3. Compute `fesedflux_reduce`:
    - Read `fesedfrac`, determine land-adjascent points;
