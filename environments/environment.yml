@@ -49,3 +49,4 @@ dependencies:
   - git+https://github.com/NCAR/esmlab-regrid.git
   - git+https://github.com/matt-long/xpersist.git
   - ncar-jobqueue
+  - papermill
