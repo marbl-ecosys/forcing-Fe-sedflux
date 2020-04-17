@@ -1,6 +1,8 @@
 import os
 import yaml
 
+import time
+
 import xarray
 import numpy as np
 
@@ -21,11 +23,24 @@ dirout = f'/glade/work/{USER}/cesm_inputdata'
 os.makedirs(dirout, exist_ok=True)   
 
 
+inputdata = '/glade/p/cesmdata/cseg/inputdata'
+
 # TODO: use intake
 with open('datasets.yaml') as f:
     datasets = yaml.safe_load(f)
 
 POP_grids = ['POP_tx0.1v3', 'POP_gx3v7', 'POP_gx1v7']    
+
+
+class timer(object):
+    def __init__(self, name='timer'):
+        self.name = name
+
+    def __enter__(self):
+        self.start = time.time()
+
+    def __exit__(self, type, value, traceback):
+        print(f'[{self.name}]: {(time.time() - self.start):0.2f} sec')
 
 
 def latlon_to_scrip(nx, ny, lon0=-180., grid_imask=None, file_out=None):
