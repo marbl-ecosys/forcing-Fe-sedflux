@@ -3,10 +3,26 @@ set -e
 
 source activate forcing-Fe-sedflux
 
+topo_product=etopo1
+
+# hardwire paths that are set elsewhere in the Python workflow
+# these would better reside in a single place
+dirwork=/glade/work/${USER}/cesm_inputdata/work
+
+
+
+echo '---------------------------------------'
+echo 'Ensure topograpy files'
+papermill -k python -p product ${topo_product} \
+    _ensure_etopo_data.ipynb _ensure_etopo_data.ipynb
+
+echo
+
 
 echo '---------------------------------------'
 echo 'Ensure grid files'
-papermill -k python _ensure_grid_files.ipynb _ensure_grid_files.ipynb
+papermill -k python \
+    _ensure_grid_files.ipynb _ensure_grid_files.ipynb
 
 echo
 
@@ -66,26 +82,38 @@ echo
 
 echo '---------------------------------------'
 echo 'Process POC flux and Velocity data'
-papermill -k python _poc_flux_bottom_velocity_inputs.ipynb _poc_flux_bottom_velocity_inputs.ipynb
+#papermill -k python \
+#    _poc_flux_bottom_velocity_inputs.ipynb \ 
+#    _poc_flux_bottom_velocity_inputs.ipynb
 
 echo
 
 
 # compute the fesedflux for each grid
 for dst_grid in POP_gx1v7 POP_gx3v7; do
+
     dirout=output/${dst_grid}
     if [ ! -d ${dirout} ]; then
         mkdir -p output/${dst_grid}
     fi
     
+    sedfrac_file=${dirwork}/sedfrac.${dst_grid}.nc
+    if [ ! -f ${sedfrac_file} ]; then
+
+        echo '---------------------------------------'
+        echo "Computing sedfrac: ${dst_grid}"
+    
+        papermill -k python _sedfrac_compute.ipynb \ 
+            ${dirout}/_sedfrac_compute.ipynb \
+            -p dst_grid ${dst_grid}
+    fi
+
     echo '---------------------------------------'
     echo "Computing fesedflux: ${dst_grid}"
     
-    papermill -k python _sedfrac_compute.ipynb ${dirout}/_sedfrac_compute.ipynb \
-              -p dst_grid ${dst_grid}
-              
-    papermill -k python Fe_sediment_flux_forcing.ipynb ${dirout}/Fe_sediment_flux_forcing.ipynb \
-              -p dst_grid ${dst_grid}
+    papermill -k python Fe_sediment_flux_forcing.ipynb \
+            ${dirout}/Fe_sediment_flux_forcing.ipynb \
+            -p dst_grid ${dst_grid}
 
     echo
 done

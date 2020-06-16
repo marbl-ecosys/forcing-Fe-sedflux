@@ -1,9 +1,17 @@
+#! /usr/bin/env python
+import click
+
 import os
 import yaml
 
-import time
+from subprocess import PIPE, Popen
 
-import xarray
+from itertools import product
+
+import time
+from datetime import datetime
+
+import xarray as xr
 import numpy as np
 
 import esmlab
@@ -22,15 +30,21 @@ os.makedirs(dirwork, exist_ok=True)
 dirout = f'/glade/work/{USER}/cesm_inputdata'
 os.makedirs(dirout, exist_ok=True)   
 
-
 inputdata = '/glade/p/cesmdata/cseg/inputdata'
 
-# TODO: use intake
-with open('datasets.yaml') as f:
-    datasets = yaml.safe_load(f)
+POP_grids = ['POP_tx0.1v3', 'POP_gx3v7', 'POP_gx1v7']
 
-POP_grids = ['POP_tx0.1v3', 'POP_gx3v7', 'POP_gx1v7']    
+nlon_pacific_xsection = {
+    'POP_gx3v7': 70,
+    'POP_gx1v7': 200,
+    'POP_tx0.1v3': 3000,
+}
 
+nlat_acc_xsection = {
+    'POP_gx3v7': 10,
+    'POP_gx1v7': 45,
+    'POP_tx0.1v3': 470,
+}
 
 class timer(object):
     def __init__(self, name='timer'):
@@ -155,7 +169,12 @@ def latlon_to_scrip(nx, ny, lon0=-180., grid_imask=None, file_out=None):
         
     return dso
 
-
+def file_name_topo(product):
+    if product == 'etopo1':
+        return '/glade/work/mclong/etopo1/ETOPO1_Ice_c_gmt4.nc'
+    else:
+        raise ValueError(f'unknown topography dataset: {product}')
+    
 def file_name_weight(src, dst, method):
     """get the name of a weight file for source and destination grids"""
     return f'{gridfile_directory}/weights/{src}_to_{dst}_{method}.nc'
@@ -175,3 +194,123 @@ def file_name_pop_topography(grid_name):
         grid_attrs['topography_fname'], 
         downloader=pop_tools.grid.downloader
     )
+
+
+def compute_land_adjacent_points(dst_grid):
+    """find land adjacent points and return DataArray 
+       that is set to "True" adjacent to land.
+       
+       Construct an array of `KMT` at all eight adjoining grid cells. 
+       `xarray.DataArray.roll` shifts the data periodically. For the `lon` 
+       direction, the domain is periodic, so this is appropriate. Our 
+       Greenland-pole grids have land at both northern and southern parts of 
+       the logical domain, so no special treament is required. The tri-pole 
+       grids, however, is periodic: the left half of the top row maps to the 
+       right half. If `ltripole == True`, we replace the bottom row of the 
+       `KMT` array with the top row flipped left-to-right. 
+    """
+    
+    ds = pop_tools.get_grid(dst_grid)
+    nk = len(ds.z_t)
+    nj, ni = ds.KMT.shape
+
+    ltripole = ds.attrs['type'] == 'tripole'
+    
+    # make 3D array of 0:km
+    zero_to_km_m1 = xr.DataArray(np.arange(0, nk), dims=('z_t'))
+    ONES_3d = xr.DataArray(np.ones((nk, nj, ni)), dims=('z_t', 'nlat', 'nlon'))
+    ZERO_TO_KM_m1 = (zero_to_km_m1 * ONES_3d)
+
+    # mask out cells where k is below KMT
+    MASK = ZERO_TO_KM_m1.where(ZERO_TO_KM_m1 < ds.KMT)
+    MASK = xr.where(MASK.notnull(), True, False)
+    
+    kmt_neighbors = xr.DataArray(np.empty((nj, ni, 8)), dims=('nlat', 'nlon', 'corner'))
+    corner = []
+
+    kmt_rollable = ds.KMT.copy()
+    if ltripole:
+        kmt_rollable[0, :] = kmt_rollable[-1, ::-1]
+
+    n = 0
+    for iroll, jroll in product([-1, 0, 1], [-1, 0, 1]):
+        # rolling?
+        if iroll == 0 and jroll == 0: continue
+
+        # directional coordinate label
+        i = '' if iroll == 0 else 'W' if iroll < 0 else 'E'
+        j = '' if jroll == 0 else 'N' if jroll < 0 else 'S'
+        corner.append(j+i)
+
+        # record kmt
+        kmt_neighbors[:, :, n] = kmt_rollable.roll(nlat=jroll, nlon=iroll, roll_coords=False)
+        n += 1
+
+    side_wall_present = (kmt_neighbors <= ds.KMT).any(dim='corner')
+    side_wall_kmt_min = (kmt_neighbors).min(dim='corner').astype(np.int)
+
+    land_adjacent = xr.zeros_like(MASK)
+    land_adjacent = land_adjacent.where(
+        (side_wall_present & (ZERO_TO_KM_m1 < ds.KMT) & (ZERO_TO_KM_m1 >= side_wall_kmt_min)) | 
+        (ZERO_TO_KM_m1 == ds.KMT-1)
+    )
+    land_adjacent = xr.where(land_adjacent.notnull(), 1, 0)
+    land_adjacent.name = 'topo_adjacent_points'
+    
+    return land_adjacent.where(MASK).fillna(0)
+    
+
+def apply_land_adj_sedfrac_min(
+    sedfrac, land_adjacent, land_adj_sedfrac_min
+):
+    """apply the `land_adj_sedfrac_min` to a sedfrac field"""
+    return xr.where(
+        (land_adjacent == 1) & (sedfrac < land_adj_sedfrac_min), 
+        land_adj_sedfrac_min, 
+        sedfrac
+    )
+
+
+def get_3d_ocean_mask(dst_grid):
+    """return a 3D ocean mask, a DataArray set to "True" for valid
+       ocean points.
+    """
+    ds = pop_tools.get_grid(dst_grid)
+        
+    nk = len(ds.z_t)
+    nj, ni = ds.KMT.shape
+
+    # make 3D array of 0:km
+    zero_to_km_m1 = xr.DataArray(np.arange(0, nk), dims=('z_t'))
+    ONES_3d = xr.DataArray(np.ones((nk, nj, ni)), dims=('z_t', 'nlat', 'nlon'))
+    ZERO_TO_KM_m1 = (zero_to_km_m1 * ONES_3d)
+
+    # mask out cells where k is below KMT
+    MASK = ZERO_TO_KM_m1.where(ZERO_TO_KM_m1 < ds.KMT)
+    return xr.where(MASK.notnull(), True, False)
+
+
+def ncks_fl_fmt64bit(file):
+    """
+    Converts file to netCDF-3 64bit by calling:
+      ncks --fl_fmt=64bit
+    
+    Parameter
+    ---------
+    file : str
+      The file to convert.
+    """
+
+    ncks_cmd = ' '.join(['ncks', '-O', '--fl_fmt=64bit', file, file])
+    cmd = ' && '.join(['module load nco', ncks_cmd])
+    
+    p = Popen(cmd, stdout=PIPE, stderr=PIPE, shell=True)
+    
+    stdout, stderr = p.communicate()
+    if p.returncode != 0:
+        print(stdout.decode('UTF-8'))
+        print(stderr.decode('UTF-8'))
+        raise   
+
+    
+    

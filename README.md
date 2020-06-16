@@ -9,7 +9,7 @@ Implements an approach to computing `fesedflux` originally in an IDL routine by 
   - constant above `POC_flux_gCm2yr_max`.
   - This puts a source on the shelf, and along productive slope/margins, but has little source in the deep ocean, where almost all the remineralization is oxic right on the sediment surface.
 
-`fesedflux` is computed on subgrid-scale bathymetry, using the fraction of each cell that is ocean bottom at each depth: `fesedfrac`. `fesedfrac` is [computed from ETOPO1 bathymetry](sedfrac_compute.ipynb) and modified as follows:
+`fesedflux` is computed on subgrid-scale bathymetry, using the fraction of each cell that is ocean bottom at each depth: `fesedfrac`. `fesedfrac` is [computed from ETOPO1 bathymetry](notebooks/_sedfrac_compute.ipynb) and modified as follows:
 - a minimum percentage of each grid cell that is sediments (`land_adj_sedfrac_min`) is applied to all land-adjacent grid cells.
 
 

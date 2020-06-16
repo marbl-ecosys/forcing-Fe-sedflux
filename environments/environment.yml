@@ -23,6 +23,7 @@ dependencies:
 - netcdf4
 - numba
 - numpy
+- new_package
 - pandas
 - pint
 - pip
