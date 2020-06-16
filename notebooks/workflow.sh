@@ -3,6 +3,15 @@ set -e
 
 source activate forcing-Fe-sedflux
 
+# ensure that `black` cache dir exists
+# https://github.com/ryantam626/jupyterlab_code_formatter/issues/10
+# https://github.com/psf/black/issues/1223
+# https://github.com/psf/black/pull/1224
+black_cache_dir=/glade/u/home/${USER}/.cache/black/19.10b0
+if [ ! -d ${black_cache_dir} ]; then
+    mkdir -p ${black_cache_dir}
+fi
+
 topo_product=etopo1
 
 # hardwire paths that are set elsewhere in the Python workflow
@@ -82,38 +91,27 @@ echo
 
 echo '---------------------------------------'
 echo 'Process POC flux and Velocity data'
-#papermill -k python \
-#    _poc_flux_bottom_velocity_inputs.ipynb \ 
-#    _poc_flux_bottom_velocity_inputs.ipynb
+papermill -k python \
+    _poc_flux_bottom_velocity_inputs.ipynb _poc_flux_bottom_velocity_inputs.ipynb
 
 echo
 
 
 # compute the fesedflux for each grid
-for dst_grid in POP_gx1v7 POP_gx3v7; do
-
+for dst_grid in POP_tx0.1v3 POP_gx1v7 POP_gx3v7; do
+    
     dirout=output/${dst_grid}
     if [ ! -d ${dirout} ]; then
-        mkdir -p output/${dst_grid}
+        mkdir -p ${dirout}
     fi
-    
-    sedfrac_file=${dirwork}/sedfrac.${dst_grid}.nc
-    if [ ! -f ${sedfrac_file} ]; then
-
+   
+    for nb in _sedfrac_compute.ipynb Fe_sediment_flux_forcing.ipynb; do
         echo '---------------------------------------'
-        echo "Computing sedfrac: ${dst_grid}"
-    
-        papermill -k python _sedfrac_compute.ipynb \ 
-            ${dirout}/_sedfrac_compute.ipynb \
-            -p dst_grid ${dst_grid}
-    fi
+        echo "${nb}: ${dst_grid}"
 
-    echo '---------------------------------------'
-    echo "Computing fesedflux: ${dst_grid}"
+        papermill -k python ${nb} ${dirout}/${nb} -p dst_grid ${dst_grid}
     
-    papermill -k python Fe_sediment_flux_forcing.ipynb \
-            ${dirout}/Fe_sediment_flux_forcing.ipynb \
-            -p dst_grid ${dst_grid}
-
-    echo
+        echo
+    done
+    
 done

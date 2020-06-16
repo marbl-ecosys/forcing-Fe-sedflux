@@ -290,6 +290,35 @@ def get_3d_ocean_mask(dst_grid):
     return xr.where(MASK.notnull(), True, False)
 
 
+def remap_z_t(da, src_grid, dst_grid):
+    """Handle vertical "interpolation", exploiting the fact 
+       that the POP vertical coordinates are identical for 
+       all grids, except that the hi-res model has 2 extra 
+       levels at the bottom. 
+    """
+    
+    grids_60lev = ['POP_gx1v6', 'POP_gx1v7', 'POP_gx3v7']
+    grids_62lev = ['POP_tx0.1v3']
+    
+    new_z_t = pop_tools.get_grid(dst_grid).z_t
+
+    # lo-res ---> lo-res: just return
+    if src_grid in grids_60lev and dst_grid in grids_60lev:
+        return da.assign_coords({'z_t': new_z_t})
+                   
+    # hi-res ---> lo-res: return all but the lowest two levels
+    elif src_grid in grids_62lev and dst_grid in grids_60lev:
+        return da.isel(z_t=slice(0, -2)).assign_coords({'z_t': new_z_t})
+
+    # lo-res ---> hi-res: copy the lowest level down
+    elif src_grid in grids_60lev and dst_grid in grids_62lev:
+        dao_slab_m2 = da.isel(z_t=-1).assign_coords({'z_t': new_z_t[-2]})
+        dao_slab_m1 = da.isel(z_t=-1).assign_coords({'z_t': new_z_t[-1]})
+        return xr.concat((da, dao_slab_m2, dao_slab_m1), dim=new_z_t)
+    else:
+        raise ValueError(f'unknown grid combination: {src_grid} --> {dst_grid}')
+
+        
 def ncks_fl_fmt64bit(file):
     """
     Converts file to netCDF-3 64bit by calling:
