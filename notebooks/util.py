@@ -196,38 +196,36 @@ def file_name_pop_topography(grid_name):
     )
 
 
-def compute_land_adjacent_points(dst_grid):
-    """find land adjacent points and return DataArray 
-       that is set to "True" adjacent to land.
-       
-       Construct an array of `KMT` at all eight adjoining grid cells. 
-       `xarray.DataArray.roll` shifts the data periodically. For the `lon` 
-       direction, the domain is periodic, so this is appropriate. Our 
-       Greenland-pole grids have land at both northern and southern parts of 
-       the logical domain, so no special treament is required. The tri-pole 
-       grids, however, is periodic: the left half of the top row maps to the 
-       right half. If `ltripole == True`, we replace the bottom row of the 
-       `KMT` array with the top row flipped left-to-right. 
+def compute_topo_adjacent_points(dst_grid):
+    """
+    Find points adjacent to topography and return 3D DataArray 
+    (nz x nlat x nlon) that is set to "1" at points adjacent to topography.
+    
+    "Topography adjacent" is defined here as points where the ocean model's bottom
+    of a neighbor cell is higher in the water column.       
     """
     
+    # grid properties
     ds = pop_tools.get_grid(dst_grid)
     nk = len(ds.z_t)
     nj, ni = ds.KMT.shape
-
     ltripole = ds.attrs['type'] == 'tripole'
     
-    # make 3D array of 0:km
-    zero_to_km_m1 = xr.DataArray(np.arange(0, nk), dims=('z_t'))
-    ONES_3d = xr.DataArray(np.ones((nk, nj, ni)), dims=('z_t', 'nlat', 'nlon'))
-    ZERO_TO_KM_m1 = (zero_to_km_m1 * ONES_3d)
-
     # mask out cells where k is below KMT
-    MASK = ZERO_TO_KM_m1.where(ZERO_TO_KM_m1 < ds.KMT)
+    K = K_DataArray(nk, nj, ni)
+    MASK = K.where(K < ds.KMT)
     MASK = xr.where(MASK.notnull(), True, False)
     
-    kmt_neighbors = xr.DataArray(np.empty((nj, ni, 8)), dims=('nlat', 'nlon', 'corner'))
-    corner = []
-
+    # Construct an array of `KMT` at all eight adjoining grid cells. 
+    # `xarray.DataArray.roll` shifts the data periodically. For the `lon` 
+    # direction, the domain is periodic, so this is appropriate. Our 
+    # Greenland-pole grids have land at both northern and southern parts of 
+    # the logical domain, so no special treament is required. The tri-pole 
+    # grid, however, is periodic: the left half of the top row maps to the 
+    # right half. If `ltripole == True`, we replace the bottom row of the 
+    # `KMT` array with the top row flipped left-to-right. 
+    kmt_neighbors = xr.DataArray(np.empty((nj, ni, 8)), dims=('nlat', 'nlon', 'neighbor'))
+    neighbor = []
     kmt_rollable = ds.KMT.copy()
     if ltripole:
         kmt_rollable[0, :] = kmt_rollable[-1, ::-1]
@@ -240,27 +238,30 @@ def compute_land_adjacent_points(dst_grid):
         # directional coordinate label
         i = '' if iroll == 0 else 'W' if iroll < 0 else 'E'
         j = '' if jroll == 0 else 'N' if jroll < 0 else 'S'
-        corner.append(j+i)
+        neighbor.append(j+i)
 
         # record kmt
         kmt_neighbors[:, :, n] = kmt_rollable.roll(nlat=jroll, nlon=iroll, roll_coords=False)
         n += 1
 
-    side_wall_present = (kmt_neighbors <= ds.KMT).any(dim='corner')
-    side_wall_kmt_min = (kmt_neighbors).min(dim='corner').astype(np.int)
+    side_wall_present = (kmt_neighbors <= ds.KMT).any(dim='neighbor')
+    side_wall_kmt_min = (kmt_neighbors).min(dim='neighbor').astype(np.int)
 
-    land_adjacent = xr.zeros_like(MASK)
-    land_adjacent = land_adjacent.where(
-        (side_wall_present & (ZERO_TO_KM_m1 < ds.KMT) & (ZERO_TO_KM_m1 >= side_wall_kmt_min)) | 
-        (ZERO_TO_KM_m1 == ds.KMT-1)
+    # compute topo adjacent points
+    # points where a neighbors KMT is less than mine, set topo_adjacent = 1 
+    # for k range between my KMT and the neighbor's KMT that is highest in the water column
+    # (lowest value of KMT)
+    topo_adjacent = xr.zeros_like(MASK)
+    topo_adjacent = topo_adjacent.where(
+        (side_wall_present & (K < ds.KMT) & (K >= side_wall_kmt_min))
     )
-    land_adjacent = xr.where(land_adjacent.notnull(), 1, 0)
-    land_adjacent.name = 'topo_adjacent_points'
+    topo_adjacent = xr.where(topo_adjacent.notnull(), 1, 0)
+    topo_adjacent.name = 'topo_adjacent_points'
     
-    return land_adjacent.where(MASK).fillna(0)
+    return topo_adjacent.where(MASK).fillna(0)
     
 
-def apply_land_adj_sedfrac_min(
+def apply_topo_adj_sedfrac_min(
     sedfrac, land_adjacent, land_adj_sedfrac_min
 ):
     """apply the `land_adj_sedfrac_min` to a sedfrac field"""
@@ -271,22 +272,23 @@ def apply_land_adj_sedfrac_min(
     )
 
 
+def K_DataArray(nk, nj, ni):
+    zero_to_km_m1 = xr.DataArray(np.arange(0, nk), dims=('z_t'))
+    ONES_3d = xr.DataArray(np.ones((nk, nj, ni)), dims=('z_t', 'nlat', 'nlon'))
+    return (zero_to_km_m1 * ONES_3d)
+
+
 def get_3d_ocean_mask(dst_grid):
     """return a 3D ocean mask, a DataArray set to "True" for valid
        ocean points.
     """
-    ds = pop_tools.get_grid(dst_grid)
-        
+    ds = pop_tools.get_grid(dst_grid)        
     nk = len(ds.z_t)
     nj, ni = ds.KMT.shape
 
-    # make 3D array of 0:km
-    zero_to_km_m1 = xr.DataArray(np.arange(0, nk), dims=('z_t'))
-    ONES_3d = xr.DataArray(np.ones((nk, nj, ni)), dims=('z_t', 'nlat', 'nlon'))
-    ZERO_TO_KM_m1 = (zero_to_km_m1 * ONES_3d)
+    K = K_DataArray(nk, nj, ni)
+    MASK = K.where(K < ds.KMT)
 
-    # mask out cells where k is below KMT
-    MASK = ZERO_TO_KM_m1.where(ZERO_TO_KM_m1 < ds.KMT)
     return xr.where(MASK.notnull(), True, False)
 
 
