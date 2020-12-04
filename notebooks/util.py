@@ -4,17 +4,16 @@ import click
 import os
 import yaml
 
-from subprocess import PIPE, Popen
+from subprocess import PIPE, Popen, check_output
 
 from itertools import product
 
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import xarray as xr
 import numpy as np
 
-import esmlab
 import pop_tools
 
 
@@ -22,7 +21,7 @@ USER = os.environ['USER']
 
 # set paths
 gridfile_directory = f'/glade/work/{USER}/esmlab-regrid'
-esmlab.config.set({'regrid.gridfile-directory' : gridfile_directory})
+#esmlab.config.set({'regrid.gridfile-directory' : gridfile_directory})
 
 dirwork = f'/glade/work/{USER}/cesm_inputdata/work'
 os.makedirs(dirwork, exist_ok=True)   
@@ -45,6 +44,14 @@ nlat_acc_xsection = {
     'POP_gx1v7': 45,
     'POP_tx0.1v3': 470,
 }
+
+
+git_repo = (check_output(['git', 'config', '--get', 'remote.origin.url'])
+            .strip()
+            .decode("utf-8")
+            .replace('git@github.com:', 'https://github.com/')
+            .replace('.git', '')            
+           )
 
 class timer(object):
     def __init__(self, name='timer'):
@@ -169,12 +176,14 @@ def latlon_to_scrip(nx, ny, lon0=-180., grid_imask=None, file_out=None):
         
     return dso
 
+
 def file_name_topo(product):
     if product == 'etopo1':
         return '/glade/work/mclong/etopo1/ETOPO1_Ice_c_gmt4.nc'
     else:
         raise ValueError(f'unknown topography dataset: {product}')
-    
+
+        
 def file_name_weight(src, dst, method):
     """get the name of a weight file for source and destination grids"""
     return f'{gridfile_directory}/weights/{src}_to_{dst}_{method}.nc'
@@ -344,4 +353,28 @@ def ncks_fl_fmt64bit(file):
         raise   
 
     
+def to_netcdf_clean(dset, path, format='NETCDF3_64BIT', **kwargs):
+    """wrap to_netcdf method to circumvent some xarray shortcomings"""
     
+    dset = dset.copy()
+    
+    # ensure _FillValues are not added where they don't exist
+    for v in dset.variables:
+        if '_FillValue' not in dset[v].encoding:
+            dset[v].encoding['_FillValue'] = None
+
+
+    git_sha = check_output(['git', 'describe', '--always']).strip().decode("utf-8")
+    datestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    provenance_str = f'created by {git_repo}/tree/{git_sha} on {datestamp}'
+
+    if 'history' in dset.attrs:
+        dset.attrs['history'] += '; ' + provenance_str
+    else:
+        dset.attrs['history'] = provenance_str
+
+    print('-'*30)
+    print(f'Writing {path}')
+    dset.info()
+    print()
+    dset.to_netcdf(path, format=format, **kwargs)    
