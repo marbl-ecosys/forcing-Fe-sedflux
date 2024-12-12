@@ -43,7 +43,8 @@ class grid(object):
         
         # generate file if needed
         if self.grid_name in ['POP_gx1v6', 'POP_gx1v7', 'POP_gx3v7',]:
-            dso = pop_tools.get_grid(self.grid_name, scrip=True)    
+            dso = pop_tools.get_grid(self.grid_name, scrip=True)
+            dso.grid_imask.data = np.ones_like(dso.grid_imask.data)
         
         elif 'latlon' in self.grid_name:
             assert all(k in kwargs for k in ['nx', 'ny', 'lon0'])
