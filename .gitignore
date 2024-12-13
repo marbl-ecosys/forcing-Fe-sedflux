@@ -130,3 +130,4 @@ dmypy.json
 notebooks/notes
 notebooks/dask-worker-space/*
 notebooks/logs/*
+notebooks/PET0.RegridWeightGen.Log

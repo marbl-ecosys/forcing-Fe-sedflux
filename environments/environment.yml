@@ -15,18 +15,20 @@ dependencies:
 - dask-mpi
 - esmpy
 - intake
+- intake-esm
 - ipywidgets
 - jupyter_contrib_nbextensions
 - jupyterlab
 - matplotlib
+- ncar-jobqueue
 - nc-time-axis
 - netcdf4
 - numba
 - numpy
-- new_package
 - pandas
 - pint
 - pip
+- pop-tools
 - pytest
 - python=3.7
 - scipy
@@ -44,10 +46,4 @@ dependencies:
 - xrft
 - zarr
 - pip:
-  - git+https://github.com/matt-long/pop-tools.git
-  - git+https://github.com/NCAR/intake-esm.git
-  - git+https://github.com/NCAR/esmlab.git
-  - git+https://github.com/NCAR/esmlab-regrid.git
-  - git+https://github.com/matt-long/xpersist.git
-  - ncar-jobqueue
   - papermill

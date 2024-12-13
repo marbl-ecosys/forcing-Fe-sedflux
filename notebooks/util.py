@@ -4,17 +4,17 @@ import click
 import os
 import yaml
 
-from subprocess import PIPE, Popen
+from subprocess import PIPE, Popen, check_output
 
 from itertools import product
 
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import xarray as xr
 import numpy as np
+from scipy.sparse import csr_matrix
 
-import esmlab
 import pop_tools
 
 
@@ -22,7 +22,7 @@ USER = os.environ['USER']
 
 # set paths
 gridfile_directory = f'/glade/work/{USER}/esmlab-regrid'
-esmlab.config.set({'regrid.gridfile-directory' : gridfile_directory})
+#esmlab.config.set({'regrid.gridfile-directory' : gridfile_directory})
 
 dirwork = f'/glade/work/{USER}/cesm_inputdata/work'
 os.makedirs(dirwork, exist_ok=True)   
@@ -36,15 +36,27 @@ POP_grids = ['POP_tx0.1v3', 'POP_gx3v7', 'POP_gx1v7']
 
 nlon_pacific_xsection = {
     'POP_gx3v7': 70,
-    'POP_gx1v7': 200,
+    'POP_gx1v7': 200, # ~185.6?
+    'MOM_tx0.66v1': 169, # -174
+    'MOM_tx2_3v2': 169, # -174
     'POP_tx0.1v3': 3000,
 }
 
 nlat_acc_xsection = {
     'POP_gx3v7': 10,
-    'POP_gx1v7': 45,
+    'POP_gx1v7': 45, # ~-55.18
     'POP_tx0.1v3': 470,
+    'MOM_tx0.66v1': 103, # -55.21
+    'MOM_tx2_3v2': 103, # -55.31
 }
+
+
+git_repo = (check_output(['git', 'config', '--get', 'remote.origin.url'])
+            .strip()
+            .decode("utf-8")
+            .replace('git@github.com:', 'https://github.com/')
+            .replace('.git', '')            
+           )
 
 class timer(object):
     def __init__(self, name='timer'):
@@ -169,12 +181,14 @@ def latlon_to_scrip(nx, ny, lon0=-180., grid_imask=None, file_out=None):
         
     return dso
 
+
 def file_name_topo(product):
     if product == 'etopo1':
         return '/glade/work/mclong/etopo1/ETOPO1_Ice_c_gmt4.nc'
     else:
         raise ValueError(f'unknown topography dataset: {product}')
-    
+
+        
 def file_name_weight(src, dst, method):
     """get the name of a weight file for source and destination grids"""
     return f'{gridfile_directory}/weights/{src}_to_{dst}_{method}.nc'
@@ -206,7 +220,10 @@ def compute_topo_adjacent_points(dst_grid):
     """
     
     # grid properties
-    ds = pop_tools.get_grid(dst_grid)
+    try:
+        ds = pop_tools.get_grid(dst_grid)
+    except:
+        ds = get_MOM_grid(dst_grid)
     nk = len(ds.z_t)
     nj, ni = ds.KMT.shape
     ltripole = ds.attrs['type'] == 'tripole'
@@ -278,16 +295,29 @@ def K_DataArray(nk, nj, ni):
     return (zero_to_km_m1 * ONES_3d)
 
 
-def get_3d_ocean_mask(dst_grid):
+def get_3d_ocean_mask(dst_grid, zbins_e=None):
     """return a 3D ocean mask, a DataArray set to "True" for valid
        ocean points.
     """
-    ds = pop_tools.get_grid(dst_grid)        
-    nk = len(ds.z_t)
-    nj, ni = ds.KMT.shape
+    if dst_grid.startswith("POP"):
+        ds = pop_tools.get_grid(dst_grid)        
+        nk = len(ds.z_t)
+        nj, ni = ds.KMT.shape
 
-    K = K_DataArray(nk, nj, ni)
-    MASK = K.where(K < ds.KMT)
+        K = K_DataArray(nk, nj, ni)
+        MASK = K.where(K < ds.KMT)
+    else:
+        # TODO: these shouldn't be hardcoded...
+        if dst_grid == "MOM_tx0.66v1":
+            ds = xr.open_dataset("/glade/work/mlevy/cesm_inputdata/tx0.66v1.static.nc")
+        if dst_grid == "MOM_tx2_3v2":
+            ds = xr.open_dataset("/glade/work/mlevy/cesm_inputdata/tx2_3v2.static.nc").rename({'deptho': 'depth_ocean'})
+        nk = zbins_e.size-1
+        nj, ni = ds.depth_ocean.shape
+        K = K_DataArray(nk, nj, ni)
+        MASK = K
+        for k in range(nk):
+            MASK.data[k,:,:] = np.where(ds.depth_ocean.data >= zbins_e[k+1], 1, np.nan)
 
     return xr.where(MASK.notnull(), True, False)
 
@@ -301,8 +331,12 @@ def remap_z_t(da, src_grid, dst_grid):
     
     grids_60lev = ['POP_gx1v6', 'POP_gx1v7', 'POP_gx3v7']
     grids_62lev = ['POP_tx0.1v3']
-    
-    new_z_t = pop_tools.get_grid(dst_grid).z_t
+#     grids_WOAlev = ['MOM_tx0.66v1']
+
+    if dst_grid.startswith('POP'):
+        new_z_t = pop_tools.get_grid(dst_grid).z_t
+    else:
+        new_z_t = pop_tools.get_grid('POP_gx1v7').z_t
 
     # lo-res ---> lo-res: just return
     if src_grid in grids_60lev and dst_grid in grids_60lev:
@@ -320,7 +354,84 @@ def remap_z_t(da, src_grid, dst_grid):
     else:
         raise ValueError(f'unknown grid combination: {src_grid} --> {dst_grid}')
 
+
+def interval_overlap(interval_1, interval_2):
+    '''
+    compute how much overlap there is between two intervals
+    
+    intervals can be tuples, lists, numpy arrays
+    intervals can be specified in an increasing or decreasing order
+    '''
+    overlap = min([max(interval_1), max(interval_2)]) - max([min(interval_1), min(interval_2)])
+    return max([0.0, overlap])
+
+
+def get_MOM_grid(gridname):
+    z_t, z_w = get_WOA_zt_and_zw()
+    if gridname == "MOM_tx0.66v1":
+        # Read static output to get area and depth (mks -> cgs)
+        # Note that we don't keep depth in final dataset, it's used to create KMT
+        ds = xr.open_dataset("/glade/work/mlevy/cesm_inputdata/tx0.66v1.static.nc", drop_variables=["xh", "yh"])
+    if gridname == "MOM_tx2_3v2":
+        # Read static output to get area and depth (mks -> cgs)
+        # Note that we don't keep depth in final dataset, it's used to create KMT
+        ds = xr.open_dataset("/glade/work/mlevy/cesm_inputdata/tx2_3v2.static.nc", drop_variables=["xh", "yh"]).rename({"deptho": "depth_ocean", "areacello": "area_t"})
+    ocn_depth = ds["depth_ocean"].data*100
+    ds = ds[["area_t", "geolat", "geolon"]].rename(area_t="TAREA", xh="nlon", yh="nlat", geolat="TLAT", geolon="TLONG")
+    ds["TLONG"].data = np.where(ds["TLONG"].data >= 0, ds["TLONG"].data, ds["TLONG"].data + 360.)
+    if ds["TAREA"].attrs["units"] == "m2":
+        ds["TAREA"].data = ds["TAREA"].data*10000
+        ds["TAREA"].attrs["units"] = "cm^2"
         
+        # Add z_t to dataset
+        ds["z_t"] = z_t
+        
+        # Compute KMT
+        KMT = np.zeros_like(ocn_depth, dtype="int32")
+        for k in range(len(z_w.data)):
+            KMT = np.where(ocn_depth > z_w.data[k], k, KMT)
+        ds["KMT"] = (("nlat", "nlon"), KMT)
+        
+        # Set type attribute to signify it's a tripole
+        ds.attrs["type"] = 'tripole'
+        
+        return ds
+        
+    return None
+
+def reintegrate_z_t_to_MOM(da, src_grid):
+    src_ds = pop_tools.get_grid(src_grid)
+    src_z_t = src_ds.z_t
+    src_z_w = xr.DataArray(np.concatenate(([0], src_ds.z_w_bot.data)), dims='z_w')
+    dst_z_t, dst_z_w = get_WOA_zt_and_zw()
+
+    # generate vertical remapping weights
+    src_len = src_z_t.size
+    dst_len = dst_z_t.size
+    weights_dense = np.zeros((dst_len, src_len))
+    for dst_ind in range(dst_len):
+        for src_ind in range(src_len):
+            if src_ind < src_len - 1:
+                overlap = interval_overlap(src_z_w.data[src_ind:src_ind+2], dst_z_w.data[dst_ind:dst_ind+2])/(src_z_w.data[src_ind+1] - src_z_w.data[src_ind])
+            else:
+                # Account for source column being shallower than dest column (but not vice versa!)
+                max_depth = max(src_z_w.data[-1], dst_z_w.data[-1])
+                overlap = interval_overlap([src_z_w.data[src_ind], max_depth], dst_z_w.data[dst_ind:dst_ind+2])/(max_depth - src_z_w.data[src_ind])
+            weights_dense[dst_ind, src_ind] = weights_dense[dst_ind, src_ind] + overlap
+
+    depth_remap_weights = csr_matrix(weights_dense)
+
+    # perform vertical remapping
+    da_flat = da.values.reshape((src_len, da.shape[1]*da.shape[2]))
+    da_flat = depth_remap_weights.dot(da_flat)
+    da_values = da_flat.reshape((dst_len, da.shape[1], da.shape[2]))
+    da_dst = xr.DataArray(da_values, dims=('z_t', 'nlat', 'nlon'),
+                          coords={'z_t':dst_z_t}, attrs=da.attrs)
+#     da_dst = da_dst.where(MASK)
+#     da_dst.encoding['_FillValue'] = da.encoding['_FillValue']
+    return da_dst
+
+
 def ncks_fl_fmt64bit(file):
     """
     Converts file to netCDF-3 64bit by calling:
@@ -344,4 +455,49 @@ def ncks_fl_fmt64bit(file):
         raise   
 
     
+def to_netcdf_clean(dset, path, format='NETCDF3_64BIT', **kwargs):
+    """wrap to_netcdf method to circumvent some xarray shortcomings"""
     
+    dset = dset.copy()
+    
+    # ensure _FillValues are not added where they don't exist
+    for v in dset.variables:
+        if '_FillValue' not in dset[v].encoding:
+            dset[v].encoding['_FillValue'] = None
+
+
+    git_sha = check_output(['git', 'describe', '--always']).strip().decode("utf-8")
+    datestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    provenance_str = f'created by {git_repo}/tree/{git_sha} on {datestamp}'
+
+    if 'history' in dset.attrs:
+        dset.attrs['history'] += '; ' + provenance_str
+    else:
+        dset.attrs['history'] = provenance_str
+
+    print('-'*30)
+    print(f'Writing {path}')
+    dset.info()
+    print()
+    dset.to_netcdf(path, format=format, **kwargs)
+
+def get_WOA_vert():
+    return np.concatenate(
+        (
+            np.arange(0, 100, 5),
+            np.arange(100, 500, 25),
+            np.arange(500, 2000, 50),
+            np.arange(2000, 5500, 100),
+            np.arange(5500, 6250, 250)
+        )
+    )
+
+def get_WOA_zt_and_zw():
+    """ Return (in cm) z_t and z_w constructed from WOA levels """
+    np_z_w = 100. * get_WOA_vert()
+    np_z_t = np_z_w[:-1] + 0.5*(np_z_w[1:] - np_z_w[:-1])
+    z_t = xr.DataArray(np_z_t, dims="z_t")
+    z_t.attrs["units"] = "cm"
+    z_w = xr.DataArray(np_z_w, dims="z_w")
+    z_w.attrs["units"] = "cm"
+    return z_t, z_w
